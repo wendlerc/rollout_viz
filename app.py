@@ -38,19 +38,27 @@ def load_jsonl(file):
     return lines
 
 
-def formatted_next_tokens(next_tokens, num_top_tokens=5):
+def formatted_next_tokens(next_tokens, label_name, val, num_top_tokens=5, new_line_token="\n"):
+    base_str = f"{label_name}: {val:.3f}"
+    if next_tokens is None:
+        return base_str
+
     top_tokens = [
         (token, prob)
         for token, prob in list(sorted(next_tokens.items(), key=lambda x: x[1], reverse=True))[:num_top_tokens]
     ]
     max_token_len = max(len(token) for token, _ in top_tokens)
-    return "\n".join([f"{token:<{max_token_len}} {prob:.3f}" for token, prob in top_tokens])
+    next_tokens_str = new_line_token.join([f"{token:<{max_token_len}} {prob:.3f}" for token, prob in top_tokens])
+    return f"{base_str}{new_line_token}----{new_line_token}{next_tokens_str}"
 
 
-def color_tokens(tokens, values, next_tokens=None):
+def color_tokens(tokens, values, metric_name, normalization_method, next_tokens=None):
     """
     Create HTML spans with background color for each token based on the corresponding value.
     Includes a custom-styled tooltip for better readability of longer text.
+
+    If the normalization method is "White to Green", the color is white at the minimum value and green at the maximum value.
+    If the normalization method is "Red to Green", the color is red at the minimum value and green at the maximum value and white at the mean value.
     """
     if not values:
         return " ".join(tokens)
@@ -83,23 +91,57 @@ def color_tokens(tokens, values, next_tokens=None):
     <div class="token-container">
     """
 
+    next_tokens = next_tokens or [None] * len(tokens)
     min_val = min(values)
     max_val = max(values)
-    scale = max_val - min_val if max_val != min_val else 1.0
-
-    next_tokens = next_tokens or [None] * len(tokens)
+    mean_val = sum(values) / len(values)
+    max_deviation = max(abs(max_val - mean_val), abs(min_val - mean_val))
+    max_abs_val = max(abs(max_val), abs(min_val))
 
     colored_text = []
     for token, val, next_token in zip(tokens, values, next_tokens):
-        normalized = (val - min_val) / scale
-        red_intensity = int(255 - (255 - 200) * (1 - normalized))
-        green_intensity = int(255 - (255 - 200) * normalized)
-        blue_intensity = 200
+        # Normalize values according to the method
+        if normalization_method == "White to Green":
+            # Scale from 0 to 255 for green intensity
+            scale = (val - min_val) / (max_val - min_val) if max_val != min_val else 0.5
+            red_intensity = 255 - int(255 * scale)  # Fade from 255 to 0
+            green_intensity = 255  # Keep green at max
+            blue_intensity = 255 - int(255 * scale)  # Fade from 255 to 0
+        elif normalization_method == "Red to Green":
+            # Scale from -1 to 1 centered at mean
+            if max_deviation == 0:
+                scale = 0
+            else:
+                scale = (val - mean_val) / max_deviation
+
+            if scale <= 0:  # Red to White
+                red_intensity = 255
+                green_intensity = blue_intensity = int(255 * (1 + scale))
+            else:  # White to Green
+                green_intensity = 255
+                red_intensity = blue_intensity = int(255 * (1 - scale))
+        else:
+            # For unnormalized values: 0 is white, positive is green, negative is red
+            # Find the maximum absolute value for scaling
+            cap = max_abs_val if max_abs_val > 0 else 1.0
+
+            if val == 0:
+                red_intensity = green_intensity = blue_intensity = 255
+            elif val > 0:
+                # Scale from white to green
+                scale = min(1.0, val / cap)  # Scale relative to max value
+                green_intensity = 255
+                red_intensity = blue_intensity = int(255 * (1 - scale))
+            else:  # val < 0
+                # Scale from white to red
+                scale = min(1.0, abs(val) / cap)  # Scale relative to max value
+                red_intensity = 255
+                green_intensity = blue_intensity = int(255 * (1 - scale))
 
         color_str = f"rgb({red_intensity},{green_intensity},{blue_intensity})"
 
         # Create a more detailed tooltip content
-        tooltip_content = f"{val:.3f}" if next_token is None else formatted_next_tokens(next_token)
+        tooltip_content = f"{val:.3f}" if next_token is None else formatted_next_tokens(next_token, metric_name, val)
         # Escape any quotes in the tooltip content
         tooltip_content = tooltip_content.replace('"', "&quot;")
 
@@ -112,6 +154,7 @@ def color_tokens(tokens, values, next_tokens=None):
 def create_token_plot(
     tokens: list[str],
     metrics: dict[str, list[float]],
+    next_tokens: list[dict[str, float]] | None = None,
     normalization_method: Callable[[list[float]], list[float]] = lambda x: x,
     tokens_per_line: int = 10,
 ) -> go.Figure:
@@ -134,6 +177,8 @@ def create_token_plot(
     Returns:
         go.Figure: A Plotly figure with one row per chunk of tokens.
     """
+    next_tokens = next_tokens or [None] * len(tokens)
+
     # Create a color dictionary for each metric using a Plotly palette (or any palette you like)
     available_colors = px.colors.qualitative.Plotly  # e.g. 10 distinct colors
     metric_names = list(metrics.keys())
@@ -156,6 +201,18 @@ def create_token_plot(
         for metric_name, metric_values in metrics.items():
             chunk_values = metric_values[start_i:end_i]
             normalized_chunk_values = normalization_method(chunk_values)
+            chunk_next_tokens = next_tokens[start_i:end_i]
+
+            # Create custom hover text combining token and value
+
+            hover_text = [
+                (
+                    "<span style='font-family: monospace;'>"
+                    + formatted_next_tokens(next_tokens, current_token, raw_value, new_line_token="<br>")
+                    + "</span>"
+                )
+                for current_token, next_tokens, raw_value in zip(chunk_tokens, chunk_next_tokens, chunk_values)
+            ]
 
             # Add the line plot for this metric in the current chunk
             fig.add_trace(
@@ -164,9 +221,11 @@ def create_token_plot(
                     y=normalized_chunk_values,
                     mode="lines+markers",
                     name=metric_name,
-                    legendgroup=metric_name,  # group by metric so only one legend entry
-                    showlegend=(chunk_index == 0),  # show legend entry only for the first chunk
+                    legendgroup=metric_name,
+                    showlegend=(chunk_index == 0),
                     line=dict(color=color_dict[metric_name]),
+                    hovertext=hover_text,
+                    hoverinfo="text",  # Show only the custom hover text
                 ),
                 row=chunk_index + 1,
                 col=1,
@@ -230,13 +289,21 @@ if data:
         # 4. If text color is chosen, let the user pick the metric
         metric_list = list(metrics.keys())
         if metric_list:
+            with col1:
+                normalization_method = st.radio("Color Normalization", ["None", "White to Green", "Red to Green"])
             with col2:
                 selected_metric = st.radio("Choose a metric to color by", [f"`{m}`" for m in metric_list])
             # Retrieve the metric values for the chosen metric
             metric_values = metrics[selected_metric.strip("`")]
 
             # Generate HTML for colored tokens
-            colored_html = color_tokens(tokens, metric_values, next_tokens=current_line.get("next_tokens"))
+            colored_html = color_tokens(
+                tokens,
+                metric_values,
+                selected_metric.strip("`"),
+                normalization_method=normalization_method,
+                next_tokens=current_line.get("next_tokens"),
+            )
             st.markdown(colored_html, unsafe_allow_html=True)
 
         else:
@@ -248,7 +315,7 @@ if data:
         #    - Provide checkboxes to select which metrics to plot
         #    - Radio button for normalization method
         with col1:
-            normalization_method = st.radio("Normalization", ["No normalization", "Min-max", "Z-score"])
+            normalization_method = st.radio("Normalization", ["None", "Min-max", "Z-score"])
             tokens_per_line = st.number_input("Tokens per line", min_value=3, value=20)
 
         metric_list = list(metrics.keys())
@@ -263,6 +330,7 @@ if data:
             tokens=tokens,
             metrics={k: v for k, v in metrics.items() if k in selected_metrics},
             normalization_method=lambda x: normalize_data(x, normalization_method),
+            next_tokens=current_line.get("next_tokens"),
             tokens_per_line=tokens_per_line,
         )
         st.plotly_chart(fig)
