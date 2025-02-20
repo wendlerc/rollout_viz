@@ -246,6 +246,22 @@ def create_token_plot(
 # Streamlit interface
 ########################
 
+def html_escape(text):
+    # Ensure the input is a string
+    s = str(text).strip()
+    #s = s.replace("&", "&amp;")
+    #s = s.replace("<", "&lt;")
+    #s = s.replace(">", "&gt;")
+    #s = s.replace('"', "&quot;")
+    #s = s.replace("'", "&#39;")
+    return s
+
+# Example usage:
+if __name__ == "__main__":
+    sample = 'Tom & Jerry < "funny" > \'classic\''
+    print(html_escape(sample))
+
+
 st.title("Rollout Metrics")
 
 st.markdown(
@@ -295,14 +311,16 @@ if data:
                 selected_metric = st.radio("Choose a metric to color by", [f"`{m}`" for m in metric_list])
             # Retrieve the metric values for the chosen metric
             metric_values = metrics[selected_metric.strip("`")]
-
+            tokens = [html_escape(tok) for tok in tokens]
             # Generate HTML for colored tokens
+            next_tokens = [{html_escape(tok):p for tok, p in topk.items()} for topk in current_line.get("next_tokens")]
+
             colored_html = color_tokens(
                 tokens,
                 metric_values,
                 selected_metric.strip("`"),
                 normalization_method=normalization_method,
-                next_tokens=current_line.get("next_tokens"),
+                next_tokens=next_tokens,
             )
             st.markdown(colored_html, unsafe_allow_html=True)
 
