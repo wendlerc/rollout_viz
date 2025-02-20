@@ -38,38 +38,75 @@ def load_jsonl(file):
     return lines
 
 
-def color_tokens(tokens, values):
+def formatted_next_tokens(next_tokens, num_top_tokens=5):
+    top_tokens = [
+        (token, prob)
+        for token, prob in list(sorted(next_tokens.items(), key=lambda x: x[1], reverse=True))[:num_top_tokens]
+    ]
+    max_token_len = max(len(token) for token, _ in top_tokens)
+    return "\n".join([f"{token:<{max_token_len}} {prob:.3f}" for token, prob in top_tokens])
+
+
+def color_tokens(tokens, values, next_tokens=None):
     """
     Create HTML spans with background color for each token based on the corresponding value.
-    We'll use a simple min-max scaling for coloring (just for demonstration).
-    Mouseover (title attribute) will display the value.
+    Includes a custom-styled tooltip for better readability of longer text.
     """
     if not values:
         return " ".join(tokens)
 
-    # Avoid division by zero if all values are the same
+    # Add CSS for custom tooltip styling
+    tooltip_style = """
+    <div>
+    <style>
+    .token-container .token-span {
+        position: relative;
+        display: inline-block;
+    }
+    .token-container .token-span:hover::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 5px 10px;
+        background: rgba(0, 0, 0, 0.8);
+        color: white;
+        border-radius: 4px;
+        font-size: 14px;
+        white-space: pre;
+        max-width: 1000px;
+        z-index: 1000;
+        font-family: monospace;
+    }
+    </style>
+    <div class="token-container">
+    """
+
     min_val = min(values)
     max_val = max(values)
     scale = max_val - min_val if max_val != min_val else 1.0
 
-    # Build the HTML with inline background color
+    next_tokens = next_tokens or [None] * len(tokens)
+
     colored_text = []
-    for token, val in zip(tokens, values):
-        # Scale value between 0 and 1
+    for token, val, next_token in zip(tokens, values, next_tokens):
         normalized = (val - min_val) / scale
-        # Convert to an RGB shade of red (or use any color mapping you like)
-        # Example: from white (255,255,255) to red (255, 100, 100)
         red_intensity = int(255 - (255 - 200) * (1 - normalized))
         green_intensity = int(255 - (255 - 200) * normalized)
         blue_intensity = 200
 
         color_str = f"rgb({red_intensity},{green_intensity},{blue_intensity})"
 
-        # title attribute for mouseover
-        span = f'<span style="background-color: {color_str};" title="{val:.3f}">{token}</span>'
+        # Create a more detailed tooltip content
+        tooltip_content = f"{val:.3f}" if next_token is None else formatted_next_tokens(next_token)
+        # Escape any quotes in the tooltip content
+        tooltip_content = tooltip_content.replace('"', "&quot;")
+
+        span = f'<span class="token-span" style="background-color: {color_str};" data-tooltip="{tooltip_content}">{token}</span>'
         colored_text.append(span)
 
-    return " ".join(colored_text)
+    return tooltip_style + " ".join(colored_text) + "</div></div>"
 
 
 def create_token_plot(
@@ -152,6 +189,15 @@ def create_token_plot(
 
 st.title("Rollout Metrics")
 
+st.markdown(
+    """
+    We expect a JSONL file where each line is a JSON object with the following keys:
+    - `tokens`: list of tokens (strings)
+    - `metrics`: dictionary of metric_name -> list of float values (same length as tokens)
+    - `next_tokens` (optional): list of dictionaries (same length as tokens), which each map from a possible next token to its associated probability (or logits)
+    """
+)
+
 # 1. Button to upload a JSONL file
 uploaded_file = st.file_uploader("Upload your JSONL file", type=["jsonl"])
 
@@ -185,12 +231,12 @@ if data:
         metric_list = list(metrics.keys())
         if metric_list:
             with col2:
-                selected_metric = st.radio("Choose a metric to color by", metric_list)
+                selected_metric = st.radio("Choose a metric to color by", [f"`{m}`" for m in metric_list])
             # Retrieve the metric values for the chosen metric
-            metric_values = metrics[selected_metric]
+            metric_values = metrics[selected_metric.strip("`")]
 
             # Generate HTML for colored tokens
-            colored_html = color_tokens(tokens, metric_values)
+            colored_html = color_tokens(tokens, metric_values, next_tokens=current_line.get("next_tokens"))
             st.markdown(colored_html, unsafe_allow_html=True)
 
         else:
