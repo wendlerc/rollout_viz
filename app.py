@@ -301,6 +301,9 @@ if data:
     tokens = current_line["tokens"]
     metrics = current_line["metrics"]  # e.g. {"scoreA": [...], "scoreB": [...], ...}
 
+    tokens = [html_escape(tok) for tok in tokens]
+    next_tokens = [{html_escape(tok):p for tok, p in topk.items()} for topk in current_line.get("next_tokens")]
+
     if display_mode == "Text Color":
         # 4. If text color is chosen, let the user pick the metric
         metric_list = list(metrics.keys())
@@ -311,9 +314,7 @@ if data:
                 selected_metric = st.radio("Choose a metric to color by", [f"`{m}`" for m in metric_list])
             # Retrieve the metric values for the chosen metric
             metric_values = metrics[selected_metric.strip("`")]
-            tokens = [html_escape(tok) for tok in tokens]
             # Generate HTML for colored tokens
-            next_tokens = [{html_escape(tok):p for tok, p in topk.items()} for topk in current_line.get("next_tokens")]
 
             colored_html = color_tokens(
                 tokens,
@@ -348,7 +349,7 @@ if data:
             tokens=tokens,
             metrics={k: v for k, v in metrics.items() if k in selected_metrics},
             normalization_method=lambda x: normalize_data(x, normalization_method),
-            next_tokens=current_line.get("next_tokens"),
+            next_tokens=next_tokens,
             tokens_per_line=tokens_per_line,
         )
         st.plotly_chart(fig)
